@@ -1,0 +1,26 @@
+*.key
+*.pem
+*.env
+.env
+.env.*
+credentials.json
+service-account*.json
+kubeconfig
+*.kubeconfig
+runpod-ssh-key
+runpod-ssh-key.pub
+
+.DS_Store
+*.swp
+*.tmp
+
+charts/
+*.tgz
+.ssh/
+
+# local-only docs (kept on disk, never pushed)
+docs/progress.md
+docs/runpod-provisioning.md
+docs/verified-behavior.md
+docs/epp-scoring-deep-dive.md
+docs/issues-and-resolutions.md

@@ -1,0 +1,200 @@
+# P/D disaggregated deployment on GH200 with MIG 2× 3g.48gb
+# Adapted from llm-d/guides/pd-disaggregation/ms-pd/values.yaml
+#
+# Key differences from the upstream 120B/8xH200 reference:
+#   - Model: Qwen2.5-7B-Instruct (not 120B) — fits in 46.5GB MIG instance
+#   - TP=1 (each MIG instance is 1 GPU partition)
+#   - 1 prefill + 1 decode replica (not 4+1)
+#   - No RDMA (MIG instances are on the same physical GPU)
+#   - CPU KV offloading enabled (448GB system RAM available)
+#   - runtimeClassName: nvidia (required for k3s nvidia GPU access)
+
+multinode: false
+
+modelArtifacts:
+  uri: "hf://Qwen/Qwen2.5-7B-Instruct"
+  size: 30Gi
+  authSecretName: "llm-d-hf-token"
+  name: "Qwen/Qwen2.5-7B-Instruct"
+  labels:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: "pd-disaggregation"
+    llm-d.ai/hardware-variant: "gpu"
+    llm-d.ai/accelerator-vendor: "nvidia"
+    llm-d.ai/model: "Qwen2.5-7B-Instruct"
+
+routing:
+  servicePort: 8000
+  proxy:
+    image: ghcr.io/llm-d/llm-d-routing-sidecar:v0.7.1
+    connector: nixlv2
+    secure: false
+
+accelerator:
+  type: nvidia
+
+decode:
+  create: true
+  parallelism:
+    tensor: 1
+  replicas: 1
+  runtimeClassName: nvidia
+  monitoring:
+    podmonitor:
+      enabled: false
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cuda:v0.6.0
+      modelCommand: vllmServe
+      args:
+        - "--block-size"
+        - "128"
+        - "--kv-transfer-config"
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
+        - "--disable-uvicorn-access-log"
+        - "--max-model-len"
+        - "8192"
+        - "--gpu-memory-utilization"
+        - "0.90"
+        - "--enable-prefix-caching"
+      env:
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      ports:
+        - containerPort: 8200
+          name: vllm
+          protocol: TCP
+        - containerPort: 5600
+          name: nixl
+          protocol: TCP
+      resources:
+        limits:
+          memory: 64Gi
+          cpu: "16"
+        requests:
+          memory: 32Gi
+          cpu: "8"
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm
+        - name: torch-compile-cache
+          mountPath: /.cache
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 15
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 60
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: "8Gi"
+    - name: torch-compile-cache
+      emptyDir: {}
+
+prefill:
+  create: true
+  parallelism:
+    tensor: 1
+  replicas: 1
+  runtimeClassName: nvidia
+  monitoring:
+    podmonitor:
+      enabled: false
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cuda:v0.6.0
+      modelCommand: vllmServe
+      args:
+        - "--block-size"
+        - "128"
+        - "--kv-transfer-config"
+        - '{"kv_connector":"NixlConnector", "kv_role":"kv_both"}'
+        - "--disable-uvicorn-access-log"
+        - "--max-model-len"
+        - "8192"
+        - "--gpu-memory-utilization"
+        - "0.90"
+        - "--enable-prefix-caching"
+      env:
+        - name: VLLM_NIXL_SIDE_CHANNEL_HOST
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+      ports:
+        - containerPort: 8000
+          name: vllm
+          protocol: TCP
+        - containerPort: 5600
+          name: nixl
+          protocol: TCP
+      resources:
+        limits:
+          memory: 64Gi
+          cpu: "8"
+        requests:
+          memory: 32Gi
+          cpu: "4"
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm
+        - name: torch-compile-cache
+          mountPath: /.cache
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 15
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 60
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: "8Gi"
+    - name: torch-compile-cache
+      emptyDir: {}

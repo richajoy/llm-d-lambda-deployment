@@ -1,0 +1,93 @@
+# Aggregated mode: 2 replicas across 2 MIG instances
+# No NIXL, no P/D split — each pod does both prefill and decode
+# EPP still routes with prefix-cache-aware scoring
+multinode: false
+
+modelArtifacts:
+  uri: "hf://Qwen/Qwen2.5-7B-Instruct"
+  size: 30Gi
+  authSecretName: "llm-d-hf-token"
+  name: "Qwen/Qwen2.5-7B-Instruct"
+  labels:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: "pd-disaggregation"
+    llm-d.ai/hardware-variant: "gpu"
+    llm-d.ai/accelerator-vendor: "nvidia"
+    llm-d.ai/model: "Qwen2.5-7B-Instruct"
+
+routing:
+  proxy:
+    enabled: false
+    targetPort: 8000
+
+accelerator:
+  type: nvidia
+
+decode:
+  create: true
+  parallelism:
+    tensor: 1
+    data: 1
+  replicas: 2
+  runtimeClassName: nvidia
+  monitoring:
+    podmonitor:
+      enabled: false
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cuda:v0.6.0
+      modelCommand: vllmServe
+      args:
+        - "--disable-uvicorn-access-log"
+        - "--gpu-memory-utilization=0.90"
+        - "--max-model-len=8192"
+        - "--enable-prefix-caching"
+      ports:
+        - containerPort: 8000
+          name: vllm
+          protocol: TCP
+      resources:
+        limits:
+          memory: 64Gi
+          cpu: "16"
+        requests:
+          memory: 32Gi
+          cpu: "8"
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 15
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 60
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: "8Gi"
+
+prefill:
+  create: false
